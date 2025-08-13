@@ -1,4 +1,4 @@
-name: check-os
+name: encrypt-token
 
 on:
   schedule:
@@ -29,9 +29,6 @@ jobs:
           BE_HOST: ${{ secrets.BE_HOST }}
           BE_CT: ${{ secrets.BE_CT }}
           BE_UA: ${{ secrets.BE_UA }}
-          BE_GET: ${{ secrets.BE_GET }}
-          BE_AU: ${{ secrets.BE_AU }}
-          BE_AC: ${{ secrets.BE_AC }}
           BE_K: ${{ secrets.BE_K }}
           BE_V: ${{ secrets.BE_V }}
         run: |
