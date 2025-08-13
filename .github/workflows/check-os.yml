@@ -1,24 +1,40 @@
-name: Send updata_os to poweroff
+name: Send updata_os via MQTT to poweroff
 
 on:
   workflow_dispatch:
 
 env:
-  BE_UID: ${{ secrets.BE_UID }}
-  BE_URL: https://push.bemfa.com/
+  BEMFA_UID: ${{ secrets.BEMFA_UID }}
+  MQTT_SERVER: bemfa.com
+  MQTT_PORT: 9501
   TOPIC: poweroff
-  MSG: updata_os
-  TYPE: text
+  PAYLOAD: updata_os
+  QOS: 0
 
 jobs:
-  send_bemfa:
+  send_mqtt:
     runs-on: ubuntu-latest
     steps:
-      - name: Send message to Bemfa
+      - name: Install paho-mqtt
+        run: pip install paho-mqtt
+
+      - name: Send MQTT message to Bemfa
         run: |
-          set -euo pipefail
-          encoded_msg=$(python3 -c "import urllib.parse; print(urllib.parse.quote('${MSG}'))")
-          url="${BE_URL}${BE_UID}?topic=${TOPIC}&type=${TYPE}&msg=${encoded_msg}"
-          echo "Sending Bemfa message to $url"
-          resp=$(curl -sS "$url" || echo "Bemfa send failed")
-          echo "Bemfa response: $resp"
+          python3 - <<EOF
+          import time
+          import paho.mqtt.client as mqtt
+
+          client = mqtt.Client(client_id="${BEMFA_UID}", protocol=mqtt.MQTTv311)
+          print("→ Connecting to BEMFA …")
+          client.connect("${MQTT_SERVER}", ${MQTT_PORT}, keepalive=60)
+          res = client.publish("${TOPIC}", "${PAYLOAD}", qos=int("${QOS}"))
+          if res.rc != mqtt.MQTT_ERR_SUCCESS:
+              print(f"❌ Publish failed, internal code={res.rc}")
+          else:
+              print(f"⬆️ Message queued: ${PAYLOAD}")
+          client.loop_start()
+          time.sleep(0.2)
+          client.loop_stop()
+          client.disconnect()
+          print("✅ Message sent (QoS=0), exiting.")
+          EOF
