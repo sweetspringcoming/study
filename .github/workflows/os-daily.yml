@@ -43,8 +43,7 @@ jobs:
         env:
           BE_K: ${{ secrets.BE_K }}
           BE_V: ${{ secrets.BE_V }}
-        run: |
-          python3 - <<EOF
+        run: python3 - <<'EOF'
 import os, base64
 from Crypto.Cipher import AES
 from Crypto.Util.Padding import pad
@@ -55,8 +54,10 @@ token = os.environ['TOKEN']
 
 cipher = AES.new(key, AES.MODE_CBC, iv)
 enc = cipher.encrypt(pad(token.encode(), AES.block_size))
+
 with open("t.c", "w") as f:
     f.write(base64.b64encode(enc).decode())
+
 print("✅ 已写入 t.c")
 EOF
 
