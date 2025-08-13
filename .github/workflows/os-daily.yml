@@ -1,8 +1,7 @@
-name: t-get
+name: check-os
 
 on:
   schedule:
-    # 每天凌晨 0 点执行
     - cron: '0 0 * * *'
   workflow_dispatch:
 
@@ -63,16 +62,16 @@ jobs:
                               "Content-Type": os.environ["BE_CT"],
                               "User-Agent": os.environ["BE_UA"]
                           },
-                          data=os.environ["BE_BODY"],
+                          data=os.environ["BE_BODY"].encode("utf-8"),
                           timeout=10
                       )
                       resp.raise_for_status()
-                      data = resp.json()
-                      token = data.get("data", {}).get("token")
+                      resp_json = resp.json()
+                      token = resp_json.get("data", {}).get("token")
                       if token:
                           return token
                       else:
-                          print(f"❌ Token 未获取到: {data}")
+                          print(f"❌ Token 未获取到: {resp_json}")
                   except Exception as e:
                       print(f"⚠️ 第 {attempt+1} 次请求失败: {e}")
                   if attempt < max_retry:
