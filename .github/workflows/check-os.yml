@@ -1,7 +1,6 @@
 name: Monitor remote os.c and notify Bemfa
 
 on:
-  push:
   workflow_dispatch:
 
 env:
@@ -12,10 +11,12 @@ env:
   MSG: updata_os
   TYPE: text
 
+permissions:
+  contents: write  # 确保 actions 可以 push
+
 jobs:
   check_and_notify:
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -42,7 +43,7 @@ jobs:
         if: steps.check.outputs.remote_sha != steps.check.outputs.prev_sha
         run: |
           set -euo pipefail
-          url="${BE_URL}${BE_UID}&topic=${TOPIC}&type=${TYPE}&msg=${MSG}"
+          url="${BE_URL}${BE_UID}?topic=${TOPIC}&type=${TYPE}&msg=${MSG}"
           echo "Sending Bemfa/MQTT message..."
           bemfa_resp=$(curl -sS "$url" || echo "Bemfa send failed")
           echo "Bemfa response: $bemfa_resp"
@@ -51,15 +52,16 @@ jobs:
           echo "${{ steps.check.outputs.remote_sha }}" > last_hash.txt
           cp remote_os.c last_remote_os.c
 
-          # Commit changes if any
+          # Commit changes
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add last_hash.txt last_remote_os.c
+
           if git diff --staged --quiet; then
             echo "No changes to commit"
           else
             git commit -m "update hash"
-            git push origin HEAD:refs/heads/${GITHUB_REF#refs/heads/} || echo "push failed"
+            git push https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }} HEAD:refs/heads/${GITHUB_REF#refs/heads/} || echo "push failed"
           fi
 
       - name: No change - exit
