@@ -2,7 +2,7 @@ name: encrypt-and-send
 
 on:
   schedule:
-    - cron: '0 0 * * *'  # 每天执行一次
+    - cron: '0 0 * * *'
   workflow_dispatch:
 
 jobs:
@@ -18,60 +18,47 @@ jobs:
           sudo apt-get install -y jq curl python3-pip
           pip install pycryptodome
 
-      - name: Get token, encrypt, save, and call GET
+      - name: Get token
         env:
           BE_POST: ${{ secrets.BE_POST }}
           BE_HOST: ${{ secrets.BE_HOST }}
           BE_CT: ${{ secrets.BE_CT }}
           BE_UA: ${{ secrets.BE_UA }}
           BE_BODY: ${{ secrets.BE_BODY }}
-          BE_K: ${{ secrets.BE_K }}
-          BE_V: ${{ secrets.BE_V }}
-          BE_GET: ${{ secrets.BE_GET }}
-          BE_AU: ${{ secrets.BE_AU }}
-          BE_AC: ${{ secrets.BE_AC }}
         run: |
           echo "1️⃣ 获取 Bemfa token…"
-          token=$(curl -sS -X POST "$BE_POST" \
+          export TOKEN=$(curl -sS -X POST "$BE_POST" \
             -H "$BE_HOST" \
             -H "$BE_CT" \
             -H "$BE_UA" \
             -d "$BE_BODY" \
             | jq -r '.data.token')
-          
-          if [ -z "$token" ] || [ "$token" = "null" ]; then
+          if [ -z "$TOKEN" ] || [ "$TOKEN" = "null" ]; then
             echo "❌ 获取 token 失败！"
             exit 1
           fi
-          echo "✅ token 获取成功: $token"
+          echo "✅ token 获取成功: $TOKEN"
 
-          echo "2️⃣ 使用 Python 加密 token…"
-          enc_token=$(python3 - <<'EOF'
+      - name: Encrypt token and write t.c
+        env:
+          BE_K: ${{ secrets.BE_K }}
+          BE_V: ${{ secrets.BE_V }}
+        run: |
+          python3 - <<EOF
 import os, base64
 from Crypto.Cipher import AES
 from Crypto.Util.Padding import pad
 
 key = bytes.fromhex(os.environ['BE_K'])
 iv = bytes.fromhex(os.environ['BE_V'])
-token = os.environ['token']
+token = os.environ['TOKEN']
 
 cipher = AES.new(key, AES.MODE_CBC, iv)
-encrypted = cipher.encrypt(pad(token.encode(), AES.block_size))
-enc_base64 = base64.b64encode(encrypted).decode()
-print(enc_base64)
+enc = cipher.encrypt(pad(token.encode(), AES.block_size))
+with open("t.c", "w") as f:
+    f.write(base64.b64encode(enc).decode())
+print("✅ 已写入 t.c")
 EOF
-)
-
-          echo "$enc_token" > t.c
-          echo "✅ 已写入加密 token 到 t.c"
-
-          echo "3️⃣ 使用加密 token 调用 GET 接口…"
-          resp=$(curl -sS -G "$BE_GET" \
-            -H "$BE_HOST" \
-            -H "$BE_AU $token" \
-            -H "$BE_AC")
-          
-          echo "Bemfa 响应：$resp"
 
       - name: Commit encrypted token
         run: |
