@@ -1,69 +1,24 @@
-name: Monitor remote os.c and notify Bemfa
+name: Send updata_os to poweroff
 
 on:
   workflow_dispatch:
 
 env:
-  REMOTE_URL: ${{ secrets.REMOTE_URL }}
   BE_UID: ${{ secrets.BE_UID }}
   BE_URL: https://push.bemfa.com/
   TOPIC: poweroff
   MSG: updata_os
   TYPE: text
 
-permissions:
-  contents: write  # 确保 actions 可以 push
-
 jobs:
-  check_and_notify:
+  send_bemfa:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Fetch remote file and compute SHA
-        id: check
+      - name: Send message to Bemfa
         run: |
           set -euo pipefail
-          echo "Fetching remote file..."
-          curl -sS "${REMOTE_URL}" -o remote_os.c
-          remote_sha=$(sha256sum remote_os.c | awk '{print $1}')
-          echo "remote_sha=$remote_sha" >> "$GITHUB_OUTPUT"
-
-          prev_sha=""
-          if [ -f last_hash.txt ]; then
-            prev_sha=$(cat last_hash.txt | tr -d '[:space:]')
-          fi
-          echo "prev_sha=$prev_sha" >> "$GITHUB_OUTPUT"
-          echo "remote_sha=$remote_sha, prev_sha=$prev_sha"
-
-      - name: Compare and notify if changed
-        if: steps.check.outputs.remote_sha != steps.check.outputs.prev_sha
-        run: |
-          set -euo pipefail
-          url="${BE_URL}${BE_UID}?topic=${TOPIC}&type=${TYPE}&msg=${MSG}"
-          echo "Sending Bemfa/MQTT message..."
-          bemfa_resp=$(curl -sS "$url" || echo "Bemfa send failed")
-          echo "Bemfa response: $bemfa_resp"
-
-          # Save current SHA and file
-          echo "${{ steps.check.outputs.remote_sha }}" > last_hash.txt
-          cp remote_os.c last_remote_os.c
-
-          # Commit changes
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add last_hash.txt last_remote_os.c
-
-          if git diff --staged --quiet; then
-            echo "No changes to commit"
-          else
-            git commit -m "update hash"
-            git push https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }} HEAD:refs/heads/${GITHUB_REF#refs/heads/} || echo "push failed"
-          fi
-
-      - name: No change - exit
-        if: steps.check.outputs.remote_sha == steps.check.outputs.prev_sha
-        run: echo "No change detected"
+          encoded_msg=$(python3 -c "import urllib.parse; print(urllib.parse.quote('${MSG}'))")
+          url="${BE_URL}${BE_UID}?topic=${TOPIC}&type=${TYPE}&msg=${encoded_msg}"
+          echo "Sending Bemfa message to $url"
+          resp=$(curl -sS "$url" || echo "Bemfa send failed")
+          echo "Bemfa response: $resp"
