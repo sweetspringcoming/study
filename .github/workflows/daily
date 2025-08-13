@@ -29,8 +29,8 @@ jobs:
           BE_CT: ${{ secrets.BE_CT }}
           BE_UA: ${{ secrets.BE_UA }}
           BE_BODY: ${{ secrets.BE_BODY }}
-          AES_KEY_FILE: ${{ secrets.AES_KEY_FILE }}   # 存在仓库或 Secrets 中
-          AES_IV_FILE: ${{ secrets.AES_IV_FILE }}     # 存在仓库或 Secrets 中
+          AES_KEY_FILE: ${{ secrets.AES_KEY_FILE }}   
+          AES_IV_FILE: ${{ secrets.AES_IV_FILE }}    
         run: |
           python - <<EOF
           import os, json, time, base64, re
@@ -62,16 +62,16 @@ jobs:
                   resp.raise_for_status()
                   token = resp.json().get("data", {}).get("token")
                   if not token:
-                      raise ValueError("token 获取失败")
+                      raise ValueError("t获取失败")
                   break
               except Exception as e:
                   if attempt < max_attempts:
-                      print(f"⚠️ 第 {attempt} 次失败，3秒后重试...")
+                      print(f"{attempt} 次失败，3秒后重试...")
                       time.sleep(3)
                   else:
-                      raise RuntimeError(f"❌ 获取 token 失败，已尝试 {max_attempts} 次") from e
+                      raise RuntimeError(f"获取t失败，已尝试 {max_attempts} 次") from e
 
-          # AES-CBC 加密
+        
           cipher = AES.new(key, AES.MODE_CBC, iv)
           ciphertext = cipher.encrypt(pad(token.encode(), AES.block_size))
           enc_b64 = base64.b64encode(ciphertext).decode()
@@ -79,7 +79,7 @@ jobs:
           with open("t.c", "w") as f:
               f.write(enc_b64)
 
-          print("✅ token 已加密并写入 t.c")
+          print("t写入")
           EOF
 
       - name: Commit encrypted token
