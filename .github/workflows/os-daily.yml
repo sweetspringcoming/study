@@ -1,92 +1,169 @@
-name: os-daily
+name: bemfa-token-refresh
 
 on:
   schedule:
+    # 每天一次（UTC）
     - cron: '0 0 * * *'
-  workflow_dispatch:
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
 
 jobs:
-  check-os:
+  fetch-and-encrypt:
     runs-on: ubuntu-latest
-
     steps:
-      - name: Checkout repository
+      - name: Checkout repository (allow pushing)
         uses: actions/checkout@v4
+        with:
+          persist-credentials: true
+
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
 
       - name: Install dependencies
         run: |
-          sudo apt-get update
-          sudo apt-get install -y jq curl python3-pip
-          pip3 install pycryptodome
+          python -m pip install --upgrade pip
+          pip install requests pycryptodome
 
-      - name: Get Bemfa token
+      - name: Request token, encrypt and commit t.c
         env:
           BE_POST: ${{ secrets.BE_POST }}
           BE_HOST: ${{ secrets.BE_HOST }}
           BE_CT: ${{ secrets.BE_CT }}
           BE_UA: ${{ secrets.BE_UA }}
+          BE_V: ${{ secrets.BE_V }}
+          BE_K: ${{ secrets.BE_K }}
           BE_BODY: ${{ secrets.BE_BODY }}
         run: |
-          echo "1️⃣ 获取 Bemfa token…"
-          retries=0
-          max_retries=2
-          while [ $retries -le $max_retries ]; do
-            TOKEN=$(curl -sS -X POST "$BE_POST" \
-              -H "$BE_HOST" \
-              -H "$BE_CT" \
-              -H "$BE_UA" \
-              -d "$BE_BODY" \
-              | jq -r '.data.token')
-            if [ -n "$TOKEN" ] && [ "$TOKEN" != "null" ]; then
-              echo "✅ token 获取成功"
-              echo "TOKEN=$TOKEN" >> $GITHUB_ENV
-              break
-            else
-              echo "⚠️ 第 $((retries+1)) 次请求失败，重试…"
-              sleep 3
-              retries=$((retries+1))
-            fi
-          done
-          if [ -z "$TOKEN" ] || [ "$TOKEN" = "null" ]; then
-            echo "❌ 获取 token 失败，多次尝试后仍然失败"
-            exit 1
-          fi
+          python - <<'PY'
+          import os, sys, time, json, base64, subprocess
+          import requests
+          from Crypto.Cipher import AES
 
-      - name: Encrypt token and write t.c
-        env:
-          TOKEN: ${{ env.TOKEN }}
-          BE_K: ${{ secrets.BE_K }}
-          BE_V: ${{ secrets.BE_V }}
-        run: python3 - <<'EOF'
-from Crypto.Cipher import AES
-from Crypto.Util.Padding import pad
-import base64
-import os
+          # --- 环境变量 ---
+          url = os.getenv('BE_POST')
+          if not url:
+              print('ERROR: BE_POST is not set', file=sys.stderr); sys.exit(1)
 
-key = bytes.fromhex(os.environ['BE_K'])
-iv = bytes.fromhex(os.environ['BE_V'])
-token = os.environ['TOKEN']
+          # 读取 headers 全部来自 secrets（BE_HOST / BE_CT / BE_UA）
+          raw_host = os.getenv('BE_HOST','').strip()
+          raw_ct = os.getenv('BE_CT','').strip()
+          raw_ua = os.getenv('BE_UA','').strip()
 
-cipher = AES.new(key, AES.MODE_CBC, iv)
-ciphertext = cipher.encrypt(pad(token.encode(), AES.block_size))
+          headers = {}
+          # helper: parse secret like 'Host: go.bemfa.com' 或者 'go.bemfa.com'
+          def parse_header(raw, default_name):
+              if not raw:
+                  return None, None
+              if ':' in raw:
+                  k, v = raw.split(':',1)
+                  return k.strip(), v.strip()
+              # 没有冒号，放到 default_name
+              return default_name, raw
 
-with open("t.c", "w") as f:
-    f.write(base64.b64encode(ciphertext).decode())
+          hname, hval = parse_header(raw_host, 'Host')
+          if hname and hval:
+              headers[hname] = hval
+          hname, hval = parse_header(raw_ct, 'Content-Type')
+          if hname and hval:
+              headers[hname] = hval
+          hname, hval = parse_header(raw_ua, 'User-Agent')
+          if hname and hval:
+              headers[hname] = hval
 
-print("✅ 已写入 t.c")
-EOF
+          # 请求体全部来自 BE_BODY（secret）
+          be_body = os.getenv('BE_BODY','').strip()
+          if not be_body:
+              print('ERROR: BE_BODY is not set', file=sys.stderr); sys.exit(1)
 
-      - name: Send Bemfa message
-        env:
-          BE_GET: ${{ secrets.BE_GET }}
-          BE_HOST: ${{ secrets.BE_HOST }}
-          BE_AU: ${{ secrets.BE_AU }}
-          BE_AC: ${{ secrets.BE_AC }}
-          TOKEN: ${{ env.TOKEN }}
-        run: |
-          echo "2️⃣ 发送消息到 Bemfa…"
-          RESP=$(curl -sS -G "$BE_GET" \
-            -H "$BE_HOST" \
-            -H "$BE_AU $TOKEN" \
-            -H "$BE_AC")
-          echo "Bemfa 响应：$RESP"
+          try:
+              # BE_BODY 期望是 JSON 文本，例如: {"email":"111...","password":"999..."}
+              payload = json.loads(be_body)
+          except Exception as e:
+              print('ERROR: BE_BODY is not valid JSON:', e, file=sys.stderr); sys.exit(1)
+
+          # AES key/iv (Base64 存放在 secrets)
+          be_v_b64 = os.getenv('BE_V')
+          be_k_b64 = os.getenv('BE_K')
+          if not be_v_b64 or not be_k_b64:
+              print('ERROR: BE_V and BE_K must be set (base64).', file=sys.stderr); sys.exit(1)
+          try:
+              iv = base64.b64decode(be_v_b64)
+              key = base64.b64decode(be_k_b64)
+          except Exception as e:
+              print('ERROR: failed to base64-decode BE_V/BE_K:', e, file=sys.stderr); sys.exit(1)
+
+          if len(iv) != 16 or len(key) != 16:
+              print(f'ERROR: expect 16 bytes iv and 16 bytes key. got iv={len(iv)} key={len(key)}', file=sys.stderr); sys.exit(1)
+
+          # 重试策略：初始尝试 + 失败重试 2 次 => 最多 3 次
+          max_attempts = 3
+          wait_seconds = 3
+          token = None
+          last_err = None
+
+          for attempt in range(1, max_attempts+1):
+              try:
+                  # 使用 json 参数确保 Content-Type: application/json 一致
+                  resp = requests.post(url, headers=headers, json=payload, timeout=15)
+                  if resp.status_code != 200:
+                      raise Exception(f'HTTP {resp.status_code}: {resp.text[:300]}')
+                  j = resp.json()
+                  # 从 j['data']['token'] 提取
+                  if isinstance(j, dict):
+                      data = j.get('data') or {}
+                      if isinstance(data, dict):
+                          token = data.get('token')
+                      if not token:
+                          token = j.get('token')
+                  if not token:
+                      raise Exception('token not found in response JSON')
+                  print(f'Attempt {attempt}: token fetched, length {len(token)}')
+                  break
+              except Exception as e:
+                  last_err = e
+                  print(f'Attempt {attempt} failed: {e}')
+                  if attempt < max_attempts:
+                      print(f'Retrying after {wait_seconds}s...')
+                      time.sleep(wait_seconds)
+                      continue
+                  else:
+                      print('All attempts failed.', file=sys.stderr)
+                      print('Last error:', last_err, file=sys.stderr)
+                      sys.exit(1)
+
+          # AES-CBC-128 加密，PKCS#7 填充
+          def pkcs7_pad(b: bytes, block_size=16):
+              pad_len = block_size - (len(b) % block_size)
+              return b + bytes([pad_len]) * pad_len
+
+          token_bytes = token.encode('utf-8')
+          padded = pkcs7_pad(token_bytes, 16)
+          cipher = AES.new(key, AES.MODE_CBC, iv)
+          ct = cipher.encrypt(padded)
+          ct_b64 = base64.b64encode(ct).decode('ascii')
+
+          out_path = 't.c'
+          with open(out_path, 'w', encoding='utf-8') as f:
+              f.write(ct_b64 + '\n')
+
+          # git 提交并 push（只有在有变更时 commit）
+          def run(cmd):
+              print('+ ' + ' '.join(cmd))
+              subprocess.check_call(cmd)
+
+          run(['git', 'config', '--global', 'user.email', 'github-actions[bot]@users.noreply.github.com'])
+          run(['git', 'config', '--global', 'user.name', 'github-actions[bot]'])
+          run(['git', 'add', out_path])
+          try:
+              run(['git', 'commit', '-m', 'Update encrypted token (t.c)'])
+          except subprocess.CalledProcessError:
+              print('No changes to commit.')
+          else:
+              run(['git', 'push', 'origin', 'HEAD'])
+
+          print('Done.')
+          PY
