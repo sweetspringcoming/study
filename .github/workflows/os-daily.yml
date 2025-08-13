@@ -2,7 +2,7 @@ name: os-daily
 
 on:
   schedule:
-    - cron: '0 0 * * *'   # 每天零点执行一次
+    - cron: '0 0 * * *'
   workflow_dispatch:
 
 jobs:
@@ -57,12 +57,11 @@ jobs:
           TOKEN: ${{ env.TOKEN }}
           BE_K: ${{ secrets.BE_K }}
           BE_V: ${{ secrets.BE_V }}
-        run: |
-          python3 - <<'EOF'
-import os
+        run: python3 - <<'EOF'
 from Crypto.Cipher import AES
 from Crypto.Util.Padding import pad
 import base64
+import os
 
 key = bytes.fromhex(os.environ['BE_K'])
 iv = bytes.fromhex(os.environ['BE_V'])
@@ -73,6 +72,7 @@ ciphertext = cipher.encrypt(pad(token.encode(), AES.block_size))
 
 with open("t.c", "w") as f:
     f.write(base64.b64encode(ciphertext).decode())
+
 print("✅ 已写入 t.c")
 EOF
 
