@@ -25,31 +25,44 @@ jobs:
         id: check
         run: |
           set -euo pipefail
+          echo "Fetching remote file..."
           curl -sS "${REMOTE_URL}" -o remote_os.c
+          echo "Gitee file content preview:"
+          head -n 5 remote_os.c || true
           sha=$(sha256sum remote_os.c | awk '{print $1}')
+          echo "remote_sha=$sha" >> "$GITHUB_OUTPUT"
           prev=""
           if [ -f last_hash.txt ]; then
-            prev=$(cat last_hash.txt | tr -d '[:space:]')
+            prev=$(cat last_hash.txt | tr -d '[:space:]' || true)
           fi
-          echo "remote_sha=$sha" >> $GITHUB_OUTPUT
-          echo "prev_sha=$prev" >> $GITHUB_OUTPUT
+          echo "prev_sha=$prev" >> "$GITHUB_OUTPUT"
 
       - name: Compare and act if changed
         if: steps.check.outputs.remote_sha != steps.check.outputs.prev_sha
+        env:
+          BE_UID: ${{ env.BE_UID }}
+          BE_URL: ${{ env.BE_URL }}
+          TOPIC: ${{ env.TOPIC }}
+          MSG: ${{ env.MSG }}
+          TYPE: ${{ env.TYPE }}
         run: |
           set -euo pipefail
           url="${BE_URL}${BE_UID}&topic=${TOPIC}&type=${TYPE}&msg=${MSG}"
-          curl -sS "$url" -o /tmp/bemfa_resp.txt || echo "Bemfa send failed"
+          echo "Sending message to Bemfa..."
+          curl "$url" -o /tmp/bemfa_resp.txt || echo "Bemfa send failed"
+          echo "Bemfa response:"
+          cat /tmp/bemfa_resp.txt
           sha=$(sha256sum remote_os.c | awk '{print $1}')
           echo "$sha" > last_hash.txt
           cp remote_os.c last_remote_os.c
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add last_hash.txt last_remote_os.c
+          git add last_hash.txt last_remote_os.c || true
           if git diff --staged --quiet; then
             echo "No changes to commit"
           else
             git commit -m "update hash"
+            git push origin HEAD:refs/heads/${GITHUB_REF#refs/heads/} || echo "push failed"
             git push https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }} HEAD:${GITHUB_REF#refs/heads/}
           fi
 
