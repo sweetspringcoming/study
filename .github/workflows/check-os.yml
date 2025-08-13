@@ -1,81 +1,62 @@
 name: Monitor remote os.c and notify Bemfa
-
-
 permissions:
   contents: write
-
 on:
   schedule:
     - cron: '*/5 * * * *'
-  workflow_dispatch: {} 
-
+  workflow_dispatch: {}
 jobs:
   check_and_notify:
     runs-on: ubuntu-latest
     env:
-       BEMFA_UID: ${{ secrets.BEMFA_UID }}
+      BE_UID: ${{ secrets.BE_UID }}
+      BE_URL: ${{ secrets.BE_URL }}
+      REMOTE_URL: ${{ secrets.REMOTE_URL }}
       TOPIC: poweroff
       MSG: update_os
-      TYPE: '3'   
-      REMOTE_URL: 'https://gitee.com/abcyourheart/readme/raw/master/one/os.c'
+      TYPE: '3'
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-
       - name: Fetch remote file and compute hash
         id: check
         run: |
           set -euo pipefail
-
-          echo "Downloading ${REMOTE_URL}"
-          curl -sS "${REMOTE_URL}" -o remote_os.c || { echo "download failed"; exit 2; }
-
+          curl -sS "${REMOTE_URL}" -o remote_os.c
           sha=$(sha256sum remote_os.c | awk '{print $1}')
           echo "remote_sha=$sha" >> "$GITHUB_OUTPUT"
-
           if [ -f last_hash.txt ]; then
             prev=$(cat last_hash.txt | tr -d '[:space:]' || true)
             echo "prev_sha=$prev" >> "$GITHUB_OUTPUT"
           else
             echo "prev_sha=" >> "$GITHUB_OUTPUT"
           fi
-
       - name: Compare and act if changed
         if: steps.check.outputs.remote_sha != steps.check.outputs.prev_sha
         env:
-          BEMFA_UID: ${{ env.BEMFA_UID }}
+          BE_UID: ${{ env.BE_UID }}
+          BE_URL: ${{ env.BE_URL }}
           TOPIC: ${{ env.TOPIC }}
           MSG: ${{ env.MSG }}
           TYPE: ${{ env.TYPE }}
-          REMOTE_URL: ${{ env.REMOTE_URL }}
         run: |
           set -euo pipefail
-          echo "Detected change in remote file. Preparing to notify Bemfa."
-
-            url="https://apis.bemfa.com/va/sendMessage?uid=${BEMFA_UID}&topic=${TOPIC}&type=${TYPE}&msg=${MSG}"
-          echo "Calling: $url"
-          httpcode=$(curl -sS -w "%{http_code}" -o /tmp/bemfa_resp.txt "$url" || true)
-          echo "Bemfa response HTTP code: $httpcode"
-          echo "Bemfa body:"
-          cat /tmp/bemfa_resp.txt
-
-            sha=$(sha256sum remote_os.c | awk '{print $1}')
+          url="${BE_URL}${BE_UID}&topic=${TOPIC}&type=${TYPE}&msg=${MSG}"
+          curl -sS "$url" -o /tmp/bemfa_resp.txt
+          sha=$(sha256sum remote_os.c | awk '{print $1}')
           echo "$sha" > last_hash.txt
           cp remote_os.c last_remote_os.c
-
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add last_hash.txt last_remote_os.c || true
           if git diff --staged --quiet; then
             echo "No changes to commit"
           else
-            git commit -m "chore: update remote os.c hash and snapshot (detected change)"
-            # push using the provided GITHUB_TOKEN (actions/checkout sets remote with token)
+            git commit -m "update hash"
             git push origin HEAD:refs/heads/${GITHUB_REF#refs/heads/} || echo "push failed"
           fi
-
       - name: No change - exit
         if: steps.check.outputs.remote_sha == steps.check.outputs.prev_sha
-        run: echo "No change detected; nothing to do."
+        run: echo "No change detected"
