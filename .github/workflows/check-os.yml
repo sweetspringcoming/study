@@ -1,19 +1,21 @@
 name: Monitor remote os.c and notify Bemfa
-permissions:
-  contents: write
 
 on:
+  push:
   workflow_dispatch:
 
 env:
   REMOTE_URL: ${{ secrets.REMOTE_URL }}
   BE_UID: ${{ secrets.BE_UID }}
+  BE_URL: https://push.bemfa.com/
   TOPIC: poweroff
   MSG: updata_os
+  TYPE: text
 
 jobs:
   check_and_notify:
     runs-on: ubuntu-latest
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -26,10 +28,9 @@ jobs:
           set -euo pipefail
           echo "Fetching remote file..."
           curl -sS "${REMOTE_URL}" -o remote_os.c
-          # Compute SHA
           remote_sha=$(sha256sum remote_os.c | awk '{print $1}')
           echo "remote_sha=$remote_sha" >> "$GITHUB_OUTPUT"
-          # Read previous SHA
+
           prev_sha=""
           if [ -f last_hash.txt ]; then
             prev_sha=$(cat last_hash.txt | tr -d '[:space:]')
@@ -41,27 +42,15 @@ jobs:
         if: steps.check.outputs.remote_sha != steps.check.outputs.prev_sha
         run: |
           set -euo pipefail
-          echo "Remote file changed, sending MQTT message..."
-          # 直接用 Python 调用 Bemfa MQTT
-          python3 - <<'EOF'
-import paho.mqtt.client as mqtt
-import os
+          url="${BE_URL}${BE_UID}&topic=${TOPIC}&type=${TYPE}&msg=${MSG}"
+          echo "Sending Bemfa/MQTT message..."
+          bemfa_resp=$(curl -sS "$url" || echo "Bemfa send failed")
+          echo "Bemfa response: $bemfa_resp"
 
-BEMFA_UID = os.environ['BE_UID']
-TOPIC = os.environ['TOPIC']
-MSG = os.environ['MSG']
-
-client = mqtt.Client(client_id=BEMFA_UID)
-client.connect("bemfa.com", 9501, keepalive=60)
-client.loop_start()
-client.publish(TOPIC, MSG)
-client.loop_stop()
-client.disconnect()
-print("✅ MQTT message sent")
-EOF
           # Save current SHA and file
           echo "${{ steps.check.outputs.remote_sha }}" > last_hash.txt
           cp remote_os.c last_remote_os.c
+
           # Commit changes if any
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
