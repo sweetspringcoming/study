@@ -1,4 +1,4 @@
-name: check-os
+name: t-get
 
 on:
   schedule:
