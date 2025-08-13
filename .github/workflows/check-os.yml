@@ -1,1 +1,49 @@
+name: check-os
 
+on:
+  workflow_dispatch:
+
+jobs:
+  send_bemfa:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y jq curl
+
+      - name: Send message to Bemfa
+        env:
+          BE_POST: ${{ secrets.BE_POST }}
+          BE_HOST: ${{ secrets.BE_HOST }}
+          BE_CT: ${{ secrets.BE_CT }}
+          BE_UA: ${{ secrets.BE_UA }}
+          BE_BODY: ${{ secrets.BE_BODY }}
+          BE_GET: ${{ secrets.BE_GET }}
+          BE_AU: ${{ secrets.BE_AU }}
+          BE_AC: ${{ secrets.BE_AC }}
+        run: |
+          echo "1️⃣ 获取 Bemfa token…"
+          token=$(curl -sS -X POST "$BE_POST" \
+            -H "$BE_HOST" \
+            -H "$BE_CT" \
+            -H "$BE_UA" \
+            -d "$BE_BODY" \
+            | jq -r '.data.token')
+          
+          if [ -z "$token" ] || [ "$token" = "null" ]; then
+            echo "t失败！"
+            exit 1
+          fi
+          echo "t成功"
+
+          echo "发送消息到b"
+          resp=$(curl -sS -G "$BE_GET" \
+            -H "$BE_HOST" \
+            -H "$BE_AU $token" \
+            -H "$BE_AC")
+          
+          echo "b 响应：$resp"
