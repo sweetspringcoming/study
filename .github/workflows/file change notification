@@ -1,0 +1,188 @@
+name: file change notification
+
+on:
+  schedule:
+    # 每 5 分钟一次（GitHub Actions 使用 UTC）
+    - cron: '*/5 * * * *'
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+jobs:
+  check-and-send:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository (allow pushing)
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: true
+
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests pycryptodome
+
+      - name: Compare remote sha, decrypt token, send GET and update sha
+        env:
+          GE_URL: ${{ secrets.GE_URL }}
+          BE_GET: ${{ secrets.BE_GET }}
+          BE_HOST: ${{ secrets.BE_HOST }}
+          BE_AU: ${{ secrets.BE_AU }}
+          BE_AC: ${{ secrets.BE_AC }}
+          BE_UA: ${{ secrets.BE_UA }}
+          BE_V: ${{ secrets.BE_V }}
+          BE_K: ${{ secrets.BE_K }}
+        run: |
+          python - <<'PY'
+          import os, sys, subprocess, base64, time
+          import requests
+          from Crypto.Cipher import AES
+
+          # --- envs ---
+          GE_URL = os.getenv('GE_URL')
+          BE_GET = os.getenv('BE_GET')
+          BE_HOST = os.getenv('BE_HOST','').strip()
+          BE_AU = os.getenv('BE_AU','').strip()
+          BE_AC = os.getenv('BE_AC','').strip()
+          BE_UA = os.getenv('BE_UA','').strip()
+          BE_V = os.getenv('BE_V')
+          BE_K = os.getenv('BE_K')
+
+          if not GE_URL or not BE_GET:
+              print('ERROR: GE_URL and BE_GET must be set', file=sys.stderr); sys.exit(1)
+
+          # --- decrypt token from t.c ---
+          if not os.path.exists('t.c'):
+              print('ERROR: t.c not found in repo root', file=sys.stderr); sys.exit(1)
+          ct_b64 = open('t.c','r',encoding='utf-8').read().strip()
+          try:
+              ct = base64.b64decode(ct_b64)
+              iv = base64.b64decode(BE_V)
+              key = base64.b64decode(BE_K)
+          except Exception as e:
+              print('ERROR: base64 decode failed:', e, file=sys.stderr); sys.exit(1)
+          if len(iv)!=16 or len(key)!=16:
+              print('ERROR: expect 16-byte IV and 16-byte Key', file=sys.stderr); sys.exit(1)
+
+          try:
+              cipher = AES.new(key, AES.MODE_CBC, iv)
+              pt = cipher.decrypt(ct)
+              pad = pt[-1]
+              if pad<1 or pad>16:
+                  raise ValueError('Invalid PKCS#7 padding')
+              token = pt[:-pad].decode('utf-8')
+          except Exception as e:
+              print('ERROR: decryption failed:', e, file=sys.stderr); sys.exit(1)
+          print('Token length', len(token))
+
+          # --- helper to get sha via curl (as requested) ---
+          def get_remote_sha():
+              cmd = ["bash","-lc", f"curl -sS '{GE_URL}' | sha256sum | awk '{'{print $1}'}' "]
+              p = subprocess.run(cmd, capture_output=True, text=True)
+              if p.returncode != 0:
+                  raise RuntimeError('curl failed: ' + p.stderr.strip())
+              return p.stdout.strip()
+
+          try:
+              remote_sha = get_remote_sha()
+          except Exception as e:
+              print('ERROR: failed to get remote sha:', e, file=sys.stderr); sys.exit(1)
+
+          local_sha = ''
+          if os.path.exists('sha'):
+              local_sha = open('sha','r',encoding='utf-8').read().strip()
+
+          if local_sha == remote_sha:
+              print('sha identical; stopping job')
+              sys.exit(0)
+
+          # --- prepare headers from secrets ---
+          headers = {}
+          def parse_header(raw, default_name):
+              if not raw:
+                  return None, None
+              if ':' in raw:
+                  k,v = raw.split(':',1)
+                  return k.strip(), v.strip()
+              return default_name, raw
+
+          k,v = parse_header(BE_HOST, 'Host')
+          if k and v: headers[k]=v
+          k,v = parse_header(BE_AC, 'Accept')
+          if k and v: headers[k]=v
+          k,v = parse_header(BE_UA, 'User-Agent')
+          if k and v: headers[k]=v
+
+          # Authorization header: BE_AU expected like 'Authorization: Bearer' or 'Authorization: Bearer '
+          if BE_AU:
+              if ':' in BE_AU:
+                  aname, aval = BE_AU.split(':',1)
+                  aname = aname.strip(); aval = aval.strip()
+                  headers[aname] = f"{aval} {token}"
+              else:
+                  # no colon, treat entire BE_AU as prefix
+                  headers['Authorization'] = f"{BE_AU} {token}"
+          else:
+              headers['Authorization'] = f"Bearer {token}"
+
+          # --- send GET with retry (initial + 2 retries) ---
+          max_attempts = 3
+          wait_seconds = 3
+          success = False
+          last_err = None
+          for attempt in range(1, max_attempts+1):
+              try:
+                  r = requests.get(BE_GET, headers=headers, timeout=15)
+                  print('Attempt', attempt, 'HTTP', r.status_code)
+                  if r.status_code == 200:
+                      success = True
+                      break
+                  else:
+                      last_err = f'HTTP {r.status_code}: {r.text[:300]}'
+                      raise RuntimeError(last_err)
+              except Exception as e:
+                  last_err = str(e)
+                  print(f'Attempt {attempt} failed: {e}')
+                  if attempt < max_attempts:
+                      time.sleep(wait_seconds)
+                      continue
+                  else:
+                      print('All attempts failed, will continue to update sha file', file=sys.stderr)
+
+          # --- 无论成功或失败，都获取最新的 sha 并覆盖写入 sha 文件 ---
+          try:
+              new_sha = get_remote_sha()
+          except Exception as e:
+              print('ERROR: failed to fetch remote sha for writing:', e, file=sys.stderr)
+              new_sha = remote_sha  # fallback to previous value
+
+          with open('sha','w',encoding='utf-8') as f:
+              f.write(new_sha + '\n')
+
+          # --- commit & push sha ---
+          try:
+              subprocess.check_call(['git','config','--global','user.email','github-actions[bot]@users.noreply.github.com'])
+              subprocess.check_call(['git','config','--global','user.name','github-actions[bot]'])
+              subprocess.check_call(['git','add','sha'])
+              try:
+                  subprocess.check_call(['git','commit','-m','Update remote file sha'])
+              except subprocess.CalledProcessError:
+                  print('No changes to commit (sha unchanged).')
+              else:
+                  subprocess.check_call(['git','push','origin','HEAD'])
+          except Exception as e:
+              print('WARNING: git commit/push failed:', e, file=sys.stderr)
+
+          if success:
+              print('GET request succeeded')
+              sys.exit(0)
+          else:
+              print('GET request failed after retries:', last_err, file=sys.stderr)
+              sys.exit(1)
+          PY
