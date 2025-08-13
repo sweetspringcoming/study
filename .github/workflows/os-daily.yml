@@ -1,64 +1,97 @@
-import os
-import time
-import json
-import base64
-import requests
-from Crypto.Cipher import AES
-from Crypto.Util.Padding import pad
+name: check-os
 
-# Secret 环境变量（在 Actions Secrets 配置）
-BE_POST = os.environ["BE_POST"]
-BE_BODY = os.environ["BE_BODY"]
-BE_HOST = os.environ["BE_HOST"]
-BE_CT = os.environ["BE_CT"]
-BE_UA = os.environ["BE_UA"]
-BE_GET = os.environ["BE_GET"]
-BE_AU = os.environ["BE_AU"]
-BE_AC = os.environ["BE_AC"]
-BE_K = os.environ["BE_K"]  # 16/32字节 hex
-BE_V = os.environ["BE_V"]  # 16字节 hex
+on:
+  schedule:
+    # 每天凌晨 0 点执行
+    - cron: '0 0 * * *'
+  workflow_dispatch:
 
-# 把 hex 转 bytes
-key = bytes.fromhex(BE_K)
-iv = bytes.fromhex(BE_V)
+jobs:
+  encrypt-token:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
 
-def aes_cbc_encrypt(data: str) -> str:
-    cipher = AES.new(key, AES.MODE_CBC, iv)
-    encrypted = cipher.encrypt(pad(data.encode(), AES.block_size))
-    return base64.b64encode(encrypted).decode()
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.11"
 
-def get_token_with_retry(max_retry=2, interval=3):
-    for attempt in range(max_retry + 1):
-        try:
-            resp = requests.post(
-                BE_POST,
-                headers={
-                    "Host": BE_HOST,
-                    "Content-Type": BE_CT,
-                    "User-Agent": BE_UA
-                },
-                data=BE_BODY,
-                timeout=10
-            )
-            resp.raise_for_status()
-            data = resp.json()
-            token = data.get("data", {}).get("token")
-            if token:
-                return token
-            else:
-                print(f"❌ Token 未获取到: {data}")
-        except Exception as e:
-            print(f"⚠️ 第 {attempt+1} 次请求失败: {e}")
-        if attempt < max_retry:
-            time.sleep(interval)
-    raise RuntimeError("获取 token 失败，多次尝试后仍然失败")
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pycryptodome requests
 
-# 主流程
-token = get_token_with_retry()
-enc_token = aes_cbc_encrypt(token)
+      - name: Get token and encrypt
+        env:
+          BE_POST: ${{ secrets.BE_POST }}
+          BE_BODY: ${{ secrets.BE_BODY }}
+          BE_HOST: ${{ secrets.BE_HOST }}
+          BE_CT: ${{ secrets.BE_CT }}
+          BE_UA: ${{ secrets.BE_UA }}
+          BE_GET: ${{ secrets.BE_GET }}
+          BE_AU: ${{ secrets.BE_AU }}
+          BE_AC: ${{ secrets.BE_AC }}
+          BE_K: ${{ secrets.BE_K }}
+          BE_V: ${{ secrets.BE_V }}
+        run: |
+          python - <<'EOF'
+          import os
+          import time
+          import json
+          import base64
+          import requests
+          from Crypto.Cipher import AES
+          from Crypto.Util.Padding import pad
 
-# 写入根目录 t.c
-with open("t.c", "w") as f:
-    f.write(enc_token)
+          key = bytes.fromhex(os.environ["BE_K"])
+          iv = bytes.fromhex(os.environ["BE_V"])
 
-print("✅ 已写入加密 token 到 t.c")
+          def aes_cbc_encrypt(data: str) -> str:
+              cipher = AES.new(key, AES.MODE_CBC, iv)
+              encrypted = cipher.encrypt(pad(data.encode(), AES.block_size))
+              return base64.b64encode(encrypted).decode()
+
+          def get_token_with_retry(max_retry=2, interval=3):
+              for attempt in range(max_retry + 1):
+                  try:
+                      resp = requests.post(
+                          os.environ["BE_POST"],
+                          headers={
+                              "Host": os.environ["BE_HOST"],
+                              "Content-Type": os.environ["BE_CT"],
+                              "User-Agent": os.environ["BE_UA"]
+                          },
+                          data=os.environ["BE_BODY"],
+                          timeout=10
+                      )
+                      resp.raise_for_status()
+                      data = resp.json()
+                      token = data.get("data", {}).get("token")
+                      if token:
+                          return token
+                      else:
+                          print(f"❌ Token 未获取到: {data}")
+                  except Exception as e:
+                      print(f"⚠️ 第 {attempt+1} 次请求失败: {e}")
+                  if attempt < max_retry:
+                      time.sleep(interval)
+              raise RuntimeError("获取 token 失败，多次尝试后仍然失败")
+
+          token = get_token_with_retry()
+          enc_token = aes_cbc_encrypt(token)
+
+          with open("t.c", "w") as f:
+              f.write(enc_token)
+
+          print("✅ 已写入加密 token 到 t.c")
+          EOF
+
+      - name: Commit encrypted token
+        run: |
+          git config user.name "github-actions"
+          git config user.email "github-actions@github.com"
+          git add t.c
+          git commit -m "Update encrypted token [skip ci]" || echo "No changes"
+          git push
