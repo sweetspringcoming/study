@@ -57,7 +57,35 @@ jobs:
           if not GE_URL or not BE_GET:
               print('ERROR: GE_URL and BE_GET must be set', file=sys.stderr); sys.exit(1)
 
-          # --- decrypt token from t.c ---
+          # --- helper to get sha via curl ---
+          def get_remote_sha():
+              # use curl -sSL to follow redirects, compute sha256
+              cmd = ["bash","-lc", f"curl -sSL '{GE_URL}' | sha256sum | awk '{'{print $1}'}' "]
+              p = subprocess.run(cmd, capture_output=True, text=True)
+              if p.returncode != 0:
+                  raise RuntimeError('curl failed: ' + p.stderr.strip())
+              return p.stdout.strip().lower()
+
+          # --- get remote sha (first time) ---
+          try:
+              remote_sha = get_remote_sha()
+              if not remote_sha:
+                  raise RuntimeError('empty remote sha')
+          except Exception as e:
+              print('ERROR: failed to get remote sha:', e, file=sys.stderr); sys.exit(1)
+
+          # read local sha (if exists)
+          local_sha = ''
+          if os.path.exists('sha'):
+              local_sha = open('sha','r',encoding='utf-8').read().strip().lower()
+
+          # If same -> stop immediately (do NOT decrypt t.c, do NOT send GET)
+          if local_sha and local_sha == remote_sha:
+              print('sha identical; stopping job (no further action).')
+              sys.exit(0)
+
+          # --- At this point: local is missing or different -> proceed ---
+          # Decrypt token from t.c (only now)
           if not os.path.exists('t.c'):
               print('ERROR: t.c not found in repo root', file=sys.stderr); sys.exit(1)
           ct_b64 = open('t.c','r',encoding='utf-8').read().strip()
@@ -80,27 +108,6 @@ jobs:
           except Exception as e:
               print('ERROR: decryption failed:', e, file=sys.stderr); sys.exit(1)
           print('Token length', len(token))
-
-          # --- helper to get sha via curl (as requested) ---
-          def get_remote_sha():
-              cmd = ["bash","-lc", f"curl -sS '{GE_URL}' | sha256sum | awk '{'{print $1}'}' "]
-              p = subprocess.run(cmd, capture_output=True, text=True)
-              if p.returncode != 0:
-                  raise RuntimeError('curl failed: ' + p.stderr.strip())
-              return p.stdout.strip()
-
-          try:
-              remote_sha = get_remote_sha()
-          except Exception as e:
-              print('ERROR: failed to get remote sha:', e, file=sys.stderr); sys.exit(1)
-
-          local_sha = ''
-          if os.path.exists('sha'):
-              local_sha = open('sha','r',encoding='utf-8').read().strip()
-
-          if local_sha == remote_sha:
-              print('sha identical; stopping job')
-              sys.exit(0)
 
           # --- prepare headers from secrets ---
           headers = {}
@@ -163,7 +170,8 @@ jobs:
               new_sha = remote_sha  # fallback to previous value
 
           with open('sha','w',encoding='utf-8') as f:
-              f.write(new_sha + '\n')
+              f.write(new_sha + '
+')
 
           # --- commit & push sha ---
           try:
