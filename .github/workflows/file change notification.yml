@@ -1,4 +1,4 @@
-name: file change notification.
+name: file change notification
 
 on:
   schedule:
@@ -168,9 +168,9 @@ jobs:
               print('ERROR: failed to fetch remote sha for writing:', e, file=sys.stderr)
               new_sha = remote_sha
 
+          # 使用 print 写入，避免在 YAML 中出现转义字符导致解析问题
           with open('sha','w',encoding='utf-8') as f:
-              f.write(new_sha + '
-')
+              print(new_sha, file=f)
 
           # --- 提交并 push ---
           try:
