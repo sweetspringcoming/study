@@ -1,4 +1,4 @@
-name: file change notification
+name: file change notification.
 
 on:
   schedule:
@@ -40,7 +40,7 @@ jobs:
           BE_K: ${{ secrets.BE_K }}
         run: |
           python - <<'PY'
-          import os, sys, subprocess, base64, time
+          import os, sys, subprocess, base64, time, shlex
           import requests
           from Crypto.Cipher import AES
 
@@ -59,14 +59,14 @@ jobs:
 
           # --- helper to get sha via curl ---
           def get_remote_sha():
-              # use curl -sSL to follow redirects, compute sha256
-              cmd = ["bash","-lc", f"curl -sSL '{GE_URL}' | sha256sum | awk '{'{print $1}'}' "]
-              p = subprocess.run(cmd, capture_output=True, text=True)
+              # 使用 cut 而不是 awk，避免大括号转义问题
+              cmd_str = f"curl -sSL {shlex.quote(GE_URL)} | sha256sum | cut -d ' ' -f1"
+              p = subprocess.run(["bash","-lc", cmd_str], capture_output=True, text=True)
               if p.returncode != 0:
-                  raise RuntimeError('curl failed: ' + p.stderr.strip())
+                  raise RuntimeError('curl/sha256sum failed: ' + p.stderr.strip())
               return p.stdout.strip().lower()
 
-          # --- get remote sha (first time) ---
+          # --- 第一次取远端 sha ---
           try:
               remote_sha = get_remote_sha()
               if not remote_sha:
@@ -74,18 +74,18 @@ jobs:
           except Exception as e:
               print('ERROR: failed to get remote sha:', e, file=sys.stderr); sys.exit(1)
 
-          # read local sha (if exists)
+          # 读取本地 sha（若存在）
           local_sha = ''
           if os.path.exists('sha'):
               local_sha = open('sha','r',encoding='utf-8').read().strip().lower()
 
-          # If same -> stop immediately (do NOT decrypt t.c, do NOT send GET)
+          # 若相同，立即退出（不解密、不发送 GET）
           if local_sha and local_sha == remote_sha:
               print('sha identical; stopping job (no further action).')
               sys.exit(0)
 
-          # --- At this point: local is missing or different -> proceed ---
-          # Decrypt token from t.c (only now)
+          # --- 走到这里表示需要发送 ---
+          # 仅此时才解密 token
           if not os.path.exists('t.c'):
               print('ERROR: t.c not found in repo root', file=sys.stderr); sys.exit(1)
           ct_b64 = open('t.c','r',encoding='utf-8').read().strip()
@@ -109,7 +109,7 @@ jobs:
               print('ERROR: decryption failed:', e, file=sys.stderr); sys.exit(1)
           print('Token length', len(token))
 
-          # --- prepare headers from secrets ---
+          # --- 组装 headers（全部来自 secrets）---
           headers = {}
           def parse_header(raw, default_name):
               if not raw:
@@ -126,19 +126,18 @@ jobs:
           k,v = parse_header(BE_UA, 'User-Agent')
           if k and v: headers[k]=v
 
-          # Authorization header: BE_AU expected like 'Authorization: Bearer' or 'Authorization: Bearer '
+          # Authorization header: `BE_AU` 可以是 'Authorization: Bearer' 或 'Bearer'
           if BE_AU:
               if ':' in BE_AU:
                   aname, aval = BE_AU.split(':',1)
                   aname = aname.strip(); aval = aval.strip()
                   headers[aname] = f"{aval} {token}"
               else:
-                  # no colon, treat entire BE_AU as prefix
                   headers['Authorization'] = f"{BE_AU} {token}"
           else:
               headers['Authorization'] = f"Bearer {token}"
 
-          # --- send GET with retry (initial + 2 retries) ---
+          # --- 发送 GET（初始 + 失败重试 2 次，间隔 3 秒）---
           max_attempts = 3
           wait_seconds = 3
           success = False
@@ -162,18 +161,18 @@ jobs:
                   else:
                       print('All attempts failed, will continue to update sha file', file=sys.stderr)
 
-          # --- 无论成功或失败，都获取最新的 sha 并覆盖写入 sha 文件 ---
+          # --- 不论成功或失败，都写入最新 remote sha ---
           try:
               new_sha = get_remote_sha()
           except Exception as e:
               print('ERROR: failed to fetch remote sha for writing:', e, file=sys.stderr)
-              new_sha = remote_sha  # fallback to previous value
+              new_sha = remote_sha
 
           with open('sha','w',encoding='utf-8') as f:
               f.write(new_sha + '
 ')
 
-          # --- commit & push sha ---
+          # --- 提交并 push ---
           try:
               subprocess.check_call(['git','config','--global','user.email','github-actions[bot]@users.noreply.github.com'])
               subprocess.check_call(['git','config','--global','user.name','github-actions[bot]'])
