@@ -2,6 +2,7 @@ name: refresh
 
 on:
   schedule:
+    # 改.yml恢复自动运行
     # 每天一次（UTC）
     - cron: '0 0 * * *'
   workflow_dispatch: {}
