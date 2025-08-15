@@ -2,6 +2,7 @@ name: file change notification
 
 on:
   schedule:
+    # 改.yml恢复自动运行
     # 每 5 分钟一次（GitHub Actions 使用 UTC）
     - cron: '*/5 * * * *'
   workflow_dispatch: {}
